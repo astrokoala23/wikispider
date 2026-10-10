@@ -35,20 +35,32 @@ def fetch_links(soup):
     return links
 
 # Get HTML content
+# Updated access function with retry logic for 429 Too Many Requests
 async def access(client, url):
-    # Add a User-Agent header so my bot doesn't get caught (copied it from https://www.zenrows.com/blog/user-agent-web-scraping)
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
     }
 
-    try:
-        response = await client.get(url, headers=headers, timeout=5, follow_redirects=True)
-        if response.status_code == 200:
-            return BeautifulSoup(response.text, 'lxml')
-        else:
-            print(f"Couldn't fetch the page! Status code: {response.status_code}")
-    except Exception as error:
-        print(f"Something went wrong: {error}")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = await client.get(url, headers=headers, timeout=10, follow_redirects=True)
+            
+            if response.status_code == 200:
+                return BeautifulSoup(response.text, 'lxml')
+            elif response.status_code == 429:
+                # Rate limited! Back off exponentially before retrying
+                wait_time = (2 ** attempt) + 1  # Pause before retry
+                print(f"Rate limited (429) on {url}. Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+                continue
+            else:
+                print(f"Couldn't fetch the page! Status code: {response.status_code}")
+                break
+        except Exception as error:
+            print(f"Something went wrong for {url}: {error}")
+            break
+            
     return None
 
 # Recontstruct path
@@ -72,7 +84,7 @@ async def crawl(start, end, max_depth=100):
     current_level = [(start, 0)]
 
     # Limit concurrent requests so Wikipedia doesn't block your User-Agent
-    semaphore = asyncio.Semaphore(15)
+    semaphore = asyncio.Semaphore(4)
 
     async with httpx.AsyncClient() as client:
         while current_level:
@@ -129,7 +141,7 @@ async def crawl(start, end, max_depth=100):
 
 async def main():
     url = "https://en.wikipedia.org/wiki/Alphabet"
-    trail = await crawl(url, "https://en.wikipedia.org/wiki/Cristiano_Ronaldo")
+    trail = await crawl(url, "https://en.wikipedia.org/wiki/Zebra")
     print(f"Trail: {trail}")
 
 
