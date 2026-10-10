@@ -1,7 +1,8 @@
-import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
-import time
+import asyncio
+import httpx
+from collections import deque
 
 # Access all Wikipedia article links
 def fetch_links(soup):
@@ -34,22 +35,21 @@ def fetch_links(soup):
     return links
 
 # Get HTML content
-def access(url):
+async def access(client, url):
     # Add a User-Agent header so my bot doesn't get caught (copied it from https://www.zenrows.com/blog/user-agent-web-scraping)
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
     }
 
-    response = requests.get(url, headers=headers)
-
-    # Was the respons successful (code 200)?
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.text, 'html.parser')
-    else:
-        print(f"Couldn't fetch the page! Your status code is: {response.status_code}")
-        return None
-
-    return soup
+    try:
+        response = await client.get(url, headers=headers, timeout=5, follow_redirects=True)
+        if response.status_code == 200:
+            return BeautifulSoup(response.text, 'lxml')
+        else:
+            print(f"Couldn't fetch the page! Status code: {response.status_code}")
+    except Exception as error:
+        print(f"Something went wrong: {error}")
+    return None
 
 # Recontstruct path
 def backtrack(parents, end):
@@ -64,39 +64,73 @@ def backtrack(parents, end):
     return path[::-1] # Reverse path
 
 # BFS crawl
-def crawl(start, end, max_depth=3):
-    # Queue and visited set for BFS
-    queue = [(start, 0)]
-    visited = set()
-
-    # Parent tracking for path reconstruction
-    # The start node has on parents (it is the root)
+async def crawl(start, end, max_depth=100):
+    visited = {start}
     parents = {start: None}
+    
+    # Store current frontier as a list of (url, depth)
+    current_level = [(start, 0)]
 
-    while queue:
-        current, depth = queue.pop(0)
+    # Limit concurrent requests so Wikipedia doesn't block your User-Agent
+    semaphore = asyncio.Semaphore(15)
 
-        if current == end:
-            print(f"End located: {current}")
-            return backtrack(parents, end)
+    async with httpx.AsyncClient() as client:
+        while current_level:
+            next_level = []
 
-        if depth >= max_depth:
-            continue
-        else:
-            print(f"Depth: {depth}, Current: {current}, Queue length: {len(queue)}")
+            # Define a worker to fetch a single page asynchronously
+            async def fetch_and_extract(url, depth):
+                if url == end:
+                    return url, None
+                
+                async with semaphore:
+                    soup = await access(client, url)
+                
+                if not soup:
+                    return url, None
+                
+                links = fetch_links(soup)
+                return url, links
 
-        neighbours = set(fetch_links(access(current)))
+            # Fire off requests for the entire current level simultaneously
+            print(f"Processing level with {len(current_level)} concurrent requests...")
+            results = await asyncio.gather(*(fetch_and_extract(url, depth) for url, depth in current_level))
 
-        for neighbour in neighbours:
-            if neighbour not in visited:
-                visited.add(neighbour)
-                parents[neighbour] = current # Record connection
-                queue.append((neighbour, depth + 1))
+            for current, children in results:
+                if current == end:
+                    print(f"End located: {current}")
+                    return backtrack(parents, end)
+
+                if not children:
+                    continue
+
+                # Find the depth of the current node from our tracking
+                current_depth = next((d for u, d in current_level if u == current), 0)
+
+                if current_depth >= max_depth:
+                    continue
+
+                for child in children:
+                    if child not in visited:
+                        visited.add(child)
+                        parents[child] = current
+                        
+                        if child == end:
+                            print(f"End located: {child}")
+                            return backtrack(parents, end)
+                        
+                        next_level.append((child, current_depth + 1))
+
+            current_level = next_level
 
     print("Start and end are not connected!")
+    return None
 
-    
-url = "https://en.wikipedia.org/wiki/Alphabet"
-soup = access(url)
-trail = crawl(url, "https://en.wikipedia.org/wiki/Tibetan_script")
-print(f"Trail: {trail}")
+
+async def main():
+    url = "https://en.wikipedia.org/wiki/Alphabet"
+    trail = await crawl(url, "https://en.wikipedia.org/wiki/Cristiano_Ronaldo")
+    print(f"Trail: {trail}")
+
+
+asyncio.run(main())
