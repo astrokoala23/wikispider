@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
+import time
 
 # Access all Wikipedia article links
 def fetch_links(soup):
@@ -50,32 +51,52 @@ def access(url):
 
     return soup
 
-def crawl(start, end, max_depth=100):
+# Recontstruct path
+def backtrack(parents, end):
+    path = []
+    current = end
+
+    # While we haven't hit our root node
+    while current is not None:
+        path.append(current)
+        current = parents[current]
+
+    return path[::-1] # Reverse path
+
+# BFS crawl
+def crawl(start, end, max_depth=3):
     # Queue and visited set for BFS
-    queue = []
+    queue = [(start, 0)]
     visited = set()
 
     # Parent tracking for path reconstruction
     # The start node has on parents (it is the root)
     parents = {start: None}
 
-    visited.add(start)
-    queue.append(start)
+    while queue:
+        current, depth = queue.pop(0)
 
-    while queue != []:
-        current = queue.pop(0)
-        neighbours = fetch_links(access(current))
+        if current == end:
+            print(f"End located: {current}")
+            return backtrack(parents, end)
+
+        if depth >= max_depth:
+            continue
+        else:
+            print(f"Depth: {depth}, Current: {current}, Queue length: {len(queue)}")
+
+        neighbours = set(fetch_links(access(current)))
+
         for neighbour in neighbours:
             if neighbour not in visited:
-                if neighbour == end:
-                    print(f"End located!: {neighbour}")
-                    return visited
-                queue.append(neighbour)
                 visited.add(neighbour)
-                print(f"Found: {neighbour}")
+                parents[neighbour] = current # Record connection
+                queue.append((neighbour, depth + 1))
+
+    print("Start and end are not connected!")
 
     
 url = "https://en.wikipedia.org/wiki/Alphabet"
 soup = access(url)
-trail = crawl(url, "https://en.wikipedia.org/wiki/QWERTY")
+trail = crawl(url, "https://en.wikipedia.org/wiki/Tibetan_script")
 print(f"Trail: {trail}")
